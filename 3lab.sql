@@ -1,74 +1,91 @@
-
 INSTALL spatial;
 LOAD spatial;
+
 INSTALL httpfs;
 LOAD httpfs;
 
-CREATE OR REPLACE TABLE user_data AS
-SELECT * FROM ST_Read('C:/Users/smorozov/Desktop/gis/map.geojson');
+SET s3_region = 'us-west-2';
+SET http_timeout = 300000;
+SET http_retries = 5;
 
-DROP TABLE IF EXISTS overture_buildings;
+CREATE OR REPLACE TABLE user_data AS
+SELECT
+    geom,
+    id,
+    building
+FROM ST_Read('C:\Users\smorozov\Desktop\gis\map.geojson')
+WHERE ST_GeometryType(geom) IN ('POLYGON', 'MULTIPOLYGON');
+
+CREATE OR REPLACE TABLE bbox_data AS
+SELECT
+    ST_XMin(ST_Extent_Agg(geom)) AS xmin,
+    ST_XMax(ST_Extent_Agg(geom)) AS xmax,
+    ST_YMin(ST_Extent_Agg(geom)) AS ymin,
+    ST_YMax(ST_Extent_Agg(geom)) AS ymax
+FROM user_data;
 
 CREATE OR REPLACE TABLE overture_buildings AS
-SELECT 
-    row_number() OVER () as id,
-    geom as geometry,
-    '[]' as sources
-FROM user_data
-WHERE ST_GeometryType(geom) = 'POLYGON'
-  AND ST_Area(geom) < 0.00005;
+SELECT
+    id,
+    geometry                AS geom,
+    sources,
+    height,
+    num_floors,
+    class,
+    names."primary"         AS name
+FROM read_parquet(
+    's3://overturemaps-us-west-2/release/2026-04-15.0/theme=buildings/type=building/*.zstd.parquet'
+)
+WHERE
+    bbox.xmin <= 49.3590027
+    AND bbox.xmax >= 49.3417518
+    AND bbox.ymin <= 53.6767511
+    AND bbox.ymax >= 53.6632634;
 
+ALTER TABLE overture_buildings
+ADD COLUMN source_type VARCHAR;
 
-ALTER TABLE overture_buildings ADD COLUMN source_type TEXT;
-
-
-UPDATE overture_buildings
+UPDATE overture_buildings o
 SET source_type = 'my'
-WHERE EXISTS (
-    SELECT 1 FROM user_data ud 
-    WHERE ST_Intersects(overture_buildings.geometry, ud.geom)
-);
+FROM user_data u
+WHERE try(
+    ST_Intersects(
+        ST_SetCRS(o.geom, 'EPSG:4326'),
+        u.geom
+    )
+) = true;
 
 UPDATE overture_buildings
-SET source_type = CASE
-    WHEN sources::VARCHAR ILIKE '%openstreetmap%' THEN 'osm'
-    WHEN sources::VARCHAR ILIKE '%microsoft%' OR sources::VARCHAR ILIKE '%google%' THEN 'ml'
-    ELSE 'other'
-END
+SET source_type =
+    CASE
+        WHEN CAST(sources AS VARCHAR) ILIKE '%openstreetmap%' THEN 'osm'
+        WHEN CAST(sources AS VARCHAR) ILIKE '%microsoft%'
+          OR CAST(sources AS VARCHAR) ILIKE '%google%'
+          OR CAST(sources AS VARCHAR) ILIKE '%ml%' THEN 'ml'
+        ELSE 'ml'
+    END
 WHERE source_type IS NULL;
 
-
-INSERT INTO overture_buildings
-SELECT 
-    'osm_' || (row_number() OVER () + 100) as id,
-    ST_Translate(geometry, 0.0003, 0.0002) as geometry,
-    '["openstreetmap"]' as sources,
-    'osm' as source_type
-FROM overture_buildings
-WHERE source_type = 'my';
-
-
-INSERT INTO overture_buildings
-SELECT 
-    'ml_' || (row_number() OVER () + 200) as id,
-    ST_Translate(geometry, -0.0002, 0.0004) as geometry,
-    '["microsoft", "ml"]' as sources,
-    'ml' as source_type
-FROM overture_buildings
-WHERE source_type = 'my';
-
-
-SELECT source_type, COUNT(*) as count
+SELECT
+    source_type,
+    COUNT(*) AS total
 FROM overture_buildings
 GROUP BY source_type
-ORDER BY count DESC;
-
+ORDER BY total DESC;
 
 SET geometry_always_xy = true;
 
 COPY (
-    SELECT geometry, source_type, id
+    SELECT
+        geom AS geometry,
+        id,
+        source_type,
+        height,
+        num_floors,
+        class,
+        name
     FROM overture_buildings
-) TO 'C:/Users/smorozov/Desktop/gis/client/map-client/public/overture.geojson'
+    WHERE geom IS NOT NULL
+)
+TO 'C:\Users\smorozov\Desktop\gis\client\map-client\public\overture.geojson'
 WITH (FORMAT GDAL, DRIVER 'GeoJSON');
-

@@ -3,6 +3,8 @@ import './style.css';
 import Map from 'ol/Map';
 import View from 'ol/View';
 import TileLayer from 'ol/layer/Tile';
+import ImageLayer from 'ol/layer/Image';
+import ImageWMS from 'ol/source/ImageWMS';
 import VectorLayer from 'ol/layer/Vector';
 import VectorSource from 'ol/source/Vector';
 import GeoJSON from 'ol/format/GeoJSON';
@@ -26,11 +28,45 @@ const map = new Map({
   })
 });
 
-const vectorLayer = new VectorLayer({
+
+
+const buildingsLayer = new ImageLayer({
+  source: new ImageWMS({
+    url: 'http://localhost:8080/geoserver/gis/wms',
+    params: { LAYERS: 'gis:buildings', TILED: true },
+    ratio: 1,
+    serverType: 'geoserver'
+  })
+});
+
+const roadsLayer = new ImageLayer({
+  source: new ImageWMS({
+    url: 'http://localhost:8080/geoserver/gis/wms',
+    params: { LAYERS: 'gis:roads', TILED: true },
+    ratio: 1,
+    serverType: 'geoserver'
+  })
+});
+
+const poiLayer = new ImageLayer({
+  source: new ImageWMS({
+    url: 'http://localhost:8080/geoserver/gis/wms',
+    params: { LAYERS: 'gis:poi', TILED: true },
+    ratio: 1,
+    serverType: 'geoserver'
+  })
+});
+
+map.addLayer(buildingsLayer);
+map.addLayer(roadsLayer);
+map.addLayer(poiLayer);
+
+
+const overtureLayer = new VectorLayer({
   source: new VectorSource()
 });
 
-map.addLayer(vectorLayer);
+map.addLayer(overtureLayer);
 
 fetch('/overture.geojson')
   .then(response => response.json())
@@ -40,11 +76,14 @@ fetch('/overture.geojson')
       featureProjection: 'EPSG:3857'
     });
     
-    vectorLayer.getSource().addFeatures(features);
+    overtureLayer.getSource().addFeatures(features);
     
-    applyStyle(vectorLayer, 'src/mapbox-style.json');
+    applyStyle(overtureLayer, 'src/mapbox-style.json');
+    
+  
     
     if (features.length > 0) {
-      map.getView().fit(vectorLayer.getSource().getExtent(), { padding: [50, 50, 50, 50] });
+      map.getView().fit(overtureLayer.getSource().getExtent(), { padding: [50, 50, 50, 50] });
     }
-  });
+  })
+  .catch(error => console.error('Ошибка загрузки overture.geojson:', error));
